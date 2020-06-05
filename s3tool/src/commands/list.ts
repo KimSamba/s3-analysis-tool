@@ -1,8 +1,8 @@
-import {Command, flags} from '@oclif/command'
-import { S3Service } from '../services/s3'
+import {Command, flags} from '@oclif/command';
+import {S3Service} from '../services/s3';
 
 export default class list extends Command {
-  static description = 'Lists the buckets in the current AWS account'
+  static description = 'Lists the buckets in the current AWS account';
 
   static examples = [
     `$ s3tool list
@@ -10,7 +10,7 @@ bucket1
 bucket2
 bucket3
 `,
-  ]
+  ];
 
   static s3Service = S3Service.getInstance();
 
@@ -20,16 +20,27 @@ bucket3
     name: flags.string({char: 'n', description: 'name to print'}),
     // flag with no value (-f, --force)
     force: flags.boolean({char: 'f'}),
-  }
+  };
 
-  static args = []
+  static args = [];
 
   async run() {
-    const {args, flags} = this.parse(list)
+    const {args, flags} = this.parse(list);
 
     const buckets = await list.s3Service.listBuckets();
-    for (const bucket of buckets) {
-      this.log(bucket.Name);
-    }
+
+    Promise.all(
+      buckets.map(async bucket => {
+        const { Name, CreationDate } = bucket;
+        const { NumberOfFiles, Size } = await list.s3Service.getBucketInfo(Name!);
+        this.log(`
+        ${Name}
+        ${CreationDate}
+        ${NumberOfFiles}
+        ${Size}
+        `);
+
+      })
+    );
   }
 }
