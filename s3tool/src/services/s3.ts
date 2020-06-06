@@ -1,8 +1,15 @@
 import {S3} from 'aws-sdk';
-import {} from 'rxjs';
+import {Subject, Observable, from} from 'rxjs';
+import {
+  map,
+  mergeAll,
+  mergeMap,
+  scan,
+} from 'rxjs/operators';
 
 interface BucketInfo {
   Size: number;
+  LastModified: Date;
   NumberOfFiles: number;
 }
 
@@ -27,38 +34,98 @@ export class S3Service {
     return Buckets || [];
   }
 
-  async getBucketInfo(Bucket: string): Promise<BucketInfo> {
-    async function* listObjects(s3: S3) {
-      let Marker: string = '';
+  async getBucketInfoV2(Bucket: string) {
+    // list all common prefixes from bucket
+    return this.getCommonPrefixes(Bucket).pipe(
+      mergeMap(Prefix =>
+        this.listObjects({
+          Bucket,
+          Prefix,
+        })
+      ),
+      map(this.computeListObjectInfo),
+      scan(this.accumulateBucketInfo)
+    );
+  }
+
+  accumulateBucketInfo(info1: BucketInfo, info2: BucketInfo) {
+    return {
+      LastModified: new Date(
+        Math.max(info1.LastModified.valueOf(), info2.LastModified.valueOf())
+      ),
+      NumberOfFiles: info1.NumberOfFiles + info2.NumberOfFiles,
+      Size: info1.Size + info2.Size,
+    };
+  }
+
+  getCommonPrefixes(Bucket: string): Observable<string> {
+    return this.listObjects({
+      Bucket,
+      Delimiter: '/',
+    }).pipe(
+      map(x => x.CommonPrefixes!.map(el => el.Prefix!)),
+      mergeAll()
+    );
+  }
+
+  computeListObjectInfo(input: S3.ListObjectsV2Output): BucketInfo {
+    const bucketInfo: BucketInfo = input.Contents!.reduce(
+      (acc, val) => {
+        return {
+          LastModified: new Date(
+            Math.max(acc.LastModified.valueOf(), val.LastModified!.valueOf())
+          ),
+          NumberOfFiles: acc.NumberOfFiles + 1,
+          Size: acc.Size + (val.Size || 0),
+        };
+      },
+      {
+        LastModified: new Date(0),
+        NumberOfFiles: 0,
+        Size: 0,
+      } as BucketInfo
+    );
+
+    return bucketInfo;
+  }
+
+  listObjects(params: {
+    Bucket: string;
+    Prefix?: string;
+    Delimiter?: string;
+  }): Observable<S3.ListObjectsV2Output> {
+    const {Bucket, Delimiter, Prefix} = params;
+
+    async function* listObjectGenerator(s3: S3) {
+      let ContinuationToken: string = '';
       let IsTruncated: boolean = false;
       do {
         const list = await s3
-          .listObjects({
+          .listObjectsV2({
             Bucket,
-            ...(!!Marker && {Marker}),
+            ...(!!Delimiter && {Delimiter}),
+            ...(!!Prefix && {Prefix}),
+
+            ...(!!ContinuationToken && {ContinuationToken}),
           })
           .promise();
 
         IsTruncated = list.IsTruncated!;
-        const NewMarker = list.Contents?.[list.Contents.length - 1]?.Key;
-
-        if (NewMarker) {
-          Marker = NewMarker;
-        }
+        ContinuationToken = list.NextContinuationToken!;
 
         yield list;
       } while (IsTruncated);
     }
 
-    let info: BucketInfo = {
-      NumberOfFiles: 0,
-      Size: 0
-    }
-    for await(const objects of listObjects(this.s3)) {
-      info.Size += objects.Contents?.reduce((prev, cur) => prev + cur.Size!, 0) || 0;
-      info.NumberOfFiles += objects.Contents?.length || 0;
-    };
+    const subject$: Subject<S3.ListObjectsV2Output> = new Subject();
 
-    return info;
+    (async () => {
+      for await (const objects of listObjectGenerator(this.s3)) {
+        subject$.next(objects);
+      }
+      subject$.complete();
+    })();
+
+    return from(subject$);
   }
 }
