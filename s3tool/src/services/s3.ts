@@ -1,17 +1,26 @@
 import {S3} from 'aws-sdk';
-import {Subject, Observable, from} from 'rxjs';
+import {Subject, Observable, from, iif} from 'rxjs';
 import {
   map,
   mergeAll,
   mergeMap,
-  scan,
+  toArray,
+  reduce,
+  groupBy,
+  filter,
 } from 'rxjs/operators';
 
-interface BucketInfo {
+interface BucketDetailedInfo {
   Size: number;
   LastModified: Date;
   NumberOfFiles: number;
 }
+
+type BucketBasicInfo = S3.Bucket & {
+  Region: string;
+};
+
+type BucketFullInfo = BucketBasicInfo & BucketDetailedInfo;
 
 export class S3Service {
   private static instance: S3Service;
@@ -19,6 +28,14 @@ export class S3Service {
 
   private constructor() {
     this.s3 = new S3();
+  }
+
+  static initInfo(): BucketDetailedInfo {
+    return {
+      LastModified: new Date(0),
+      NumberOfFiles: 0,
+      Size: 0,
+    };
   }
 
   static getInstance(): S3Service {
@@ -29,12 +46,38 @@ export class S3Service {
     return S3Service.instance;
   }
 
-  async listBuckets() {
-    const {Buckets} = await this.s3.listBuckets().promise();
-    return Buckets || [];
+  listBuckets(params?: {
+    groupByRegion?: string;
+    filter?: string;
+  }): Observable<BucketBasicInfo> {
+    const obs$ = from(this.s3.listBuckets().promise()).pipe(
+      map(x => x.Buckets!),
+      mergeAll(),
+      filter(x => params?.filter === undefined || x.Name!.includes(params?.filter)),
+      mergeMap(async x => {
+        const {LocationConstraint} = await this.s3
+          .getBucketLocation({Bucket: x.Name!})
+          .promise();
+
+        return {
+          ...x,
+          Region: LocationConstraint || 'us-east-1',
+        };
+      })
+    );
+
+    return iif(
+      () => !!params?.groupByRegion,
+      obs$.pipe(
+        groupBy(x => x.Region),
+        mergeMap(group => group.pipe(toArray())),
+        mergeAll(),
+      ),
+      obs$
+    );
   }
 
-  async getBucketInfoV2(Bucket: string) {
+  getBucketInfoV2(Bucket: string): Observable<BucketDetailedInfo> {
     // list all common prefixes from bucket
     return this.getCommonPrefixes(Bucket).pipe(
       mergeMap(Prefix =>
@@ -44,11 +87,14 @@ export class S3Service {
         })
       ),
       map(this.computeListObjectInfo),
-      scan(this.accumulateBucketInfo)
+      reduce(this.accumulateBucketInfo, S3Service.initInfo())
     );
   }
 
-  accumulateBucketInfo(info1: BucketInfo, info2: BucketInfo) {
+  accumulateBucketInfo(
+    info1: BucketDetailedInfo,
+    info2: BucketDetailedInfo
+  ): BucketDetailedInfo {
     return {
       LastModified: new Date(
         Math.max(info1.LastModified.valueOf(), info2.LastModified.valueOf())
@@ -68,8 +114,8 @@ export class S3Service {
     );
   }
 
-  computeListObjectInfo(input: S3.ListObjectsV2Output): BucketInfo {
-    const bucketInfo: BucketInfo = input.Contents!.reduce(
+  computeListObjectInfo(input: S3.ListObjectsV2Output): BucketDetailedInfo {
+    const bucketInfo: BucketDetailedInfo = input.Contents!.reduce(
       (acc, val) => {
         return {
           LastModified: new Date(
@@ -79,11 +125,7 @@ export class S3Service {
           Size: acc.Size + (val.Size || 0),
         };
       },
-      {
-        LastModified: new Date(0),
-        NumberOfFiles: 0,
-        Size: 0,
-      } as BucketInfo
+      S3Service.initInfo()
     );
 
     return bucketInfo;

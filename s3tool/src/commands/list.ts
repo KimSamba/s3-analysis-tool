@@ -1,13 +1,9 @@
 import {Command, flags} from '@oclif/command';
 import {S3Service} from '../services/s3';
-import {
-  mostRelevantUnit,
-  prefixWithUnit,
-  unitVal,
-  SizeUnit,
-} from '../util/unitPrefix';
+import {mostRelevantUnit, prefixWithUnit, SizeUnit} from '../util/unitPrefix';
+import {mergeMap, map, defaultIfEmpty} from 'rxjs/operators';
 
-export default class list extends Command {
+export default class List extends Command {
   static description = 'Lists the buckets in the current AWS account';
 
   static examples = [
@@ -27,9 +23,14 @@ bucket3
       options: Object.values(SizeUnit).map(x => x.toLowerCase()),
       parse: input => input.toUpperCase(),
     }),
+    groupBy: flags.string({
+      char: 'g',
+      description: 'group by a specific value',
+      options: ['region'],
+    }),
     help: flags.help({char: 'h'}),
     // flag with a value (-n, --name=VALUE)
-    name: flags.string({char: 'n', description: 'name to print'}),
+    filter: flags.string({char: 'f', description: 'filter by bucket name'}),
     // flag with no value (-f, --force)
     force: flags.boolean({char: 'f'}),
   };
@@ -37,29 +38,36 @@ bucket3
   static args = [];
 
   async run() {
-    const {args, flags} = this.parse(list);
+    const {args, flags} = this.parse(List);
 
-    const buckets = await list.s3Service.listBuckets();
-
-    Promise.all(
-      buckets.map(async bucket => {
-        const {Name, CreationDate} = bucket;
-        const {LastModified, NumberOfFiles, Size} = await (
-          await list.s3Service.getBucketInfoV2(Name!)
-        ).toPromise();
-
+    List.s3Service
+      .listBuckets({
+        groupByRegion: flags.groupBy,
+        filter: flags.filter,
+      })
+      .pipe(
+        mergeMap(bucket => {
+          return List.s3Service.getBucketInfoV2(bucket.Name!).pipe(
+            map(x => ({
+              ...x,
+              ...bucket,
+            }))
+          );
+        })
+      )
+      .subscribe(bucket => {
         this.log(`
-Name: \t ${Name}
-Creation Date: \t ${CreationDate}
-Last Modified: \t ${LastModified}
-Number of files: \t ${NumberOfFiles}
+Name: \t ${bucket.Name}
+Region: \t ${bucket.Region}
+Creation Date: \t ${bucket.CreationDate}
+Last Modified: \t ${bucket.LastModified}
+Number of files: \t ${bucket.NumberOfFiles}
 Total size: \t ${
           flags.unit
-            ? prefixWithUnit(Size, flags.unit as SizeUnit)
-            : mostRelevantUnit(Size)
+            ? prefixWithUnit(bucket.Size, flags.unit as SizeUnit)
+            : mostRelevantUnit(bucket.Size)
         }
 `);
-      })
-    );
+      });
   }
 }
