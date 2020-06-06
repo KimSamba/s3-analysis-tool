@@ -25,7 +25,7 @@ bucket3
       char: 'u',
       description: 'unit for the size',
       options: Object.values(SizeUnit).map(x => x.toLowerCase()),
-      parse: input => input.toUpperCase()
+      parse: input => input.toUpperCase(),
     }),
     help: flags.help({char: 'h'}),
     // flag with a value (-n, --name=VALUE)
