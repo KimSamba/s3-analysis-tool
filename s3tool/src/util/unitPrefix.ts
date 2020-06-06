@@ -15,7 +15,7 @@ export const unitVal: {[key in SizeUnit]: {rank: number; val: number}} = {
 };
 
 export function mostRelevantUnit(val: number) {
-  let log10 = Math.floor(Math.log10(val) / 3);
+  let log10 = Math.max(0, Math.floor(Math.log10(val) / 3));
   const sizeUnit: SizeUnit =
     (Object.entries(unitVal)
       .filter(([key, value]) => value.rank === log10)
