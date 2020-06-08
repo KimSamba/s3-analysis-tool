@@ -27,5 +27,5 @@ export function mostRelevantUnit(val: number) {
 export function prefixWithUnit(nb: number, unit: SizeUnit) {
   const {val} = unitVal[unit];
 
-  return `${nb / val} ${unit}`;
+  return `${(nb / val).toFixed(2)} ${unit}`;
 }
